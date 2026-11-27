@@ -61,6 +61,35 @@ def api_config() -> dict[str, str]:
     return {}
 
 
+async def _gemini_post(
+    client: httpx.AsyncClient, cfg: dict[str, str], payload: dict[str, Any]
+) -> dict[str, Any]:
+    candidates = [
+        cfg["model"],
+        "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest",
+    ]
+    seen: list[str] = []
+    last_exc: Exception | None = None
+    for m in candidates:
+        if not m or m in seen:
+            continue
+        seen.append(m)
+        url = f"{cfg['base_url']}/models/{m}:generateContent"
+        resp = await client.post(url, params={"key": cfg["api_key"]}, json=payload)
+        if resp.status_code in {404, 429, 503}:
+            last_exc = httpx.HTTPStatusError(
+                f"{resp.status_code} for {m}", request=resp.request, response=resp
+            )
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    assert last_exc is not None
+    raise last_exc
+
+
 def _extract_json(raw: str) -> dict[str, Any]:
     text = raw.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
@@ -204,15 +233,13 @@ async def analyze_document_with_api(doc_text: str, category: str) -> dict[str, A
 
     async with httpx.AsyncClient(timeout=35.0) as client:
         if cfg["provider"] == "gemini":
-            url = f"{cfg['base_url']}/models/{cfg['model']}:generateContent"
             payload = {
                 "systemInstruction": {"parts": [{"text": DOC_SYSTEM_PROMPT}]},
                 "contents": [{"role": "user", "parts": [{"text": user_msg}]}],
                 "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
             }
-            resp = await client.post(url, params={"key": cfg["api_key"]}, json=payload)
-            resp.raise_for_status()
-            raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            data = await _gemini_post(client, cfg, payload)
+            raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
         else:
             url = f"{cfg['base_url']}/chat/completions"
             payload = {
@@ -266,7 +293,6 @@ async def ocr_images_with_api(images_b64: list[tuple[str, str]]) -> str | None:
     )
     async with httpx.AsyncClient(timeout=45.0) as client:
         if cfg["provider"] == "gemini":
-            url = f"{cfg['base_url']}/models/{cfg['model']}:generateContent"
             parts: list[dict[str, Any]] = [{"text": prompt}]
             for mime, b64 in images_b64:
                 parts.append({"inlineData": {"mimeType": mime, "data": b64}})
@@ -274,9 +300,8 @@ async def ocr_images_with_api(images_b64: list[tuple[str, str]]) -> str | None:
                 "contents": [{"role": "user", "parts": parts}],
                 "generationConfig": {"temperature": 0.1},
             }
-            resp = await client.post(url, params={"key": cfg["api_key"]}, json=payload)
-            resp.raise_for_status()
-            return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            data = await _gemini_post(client, cfg, payload)
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
         url = f"{cfg['base_url']}/chat/completions"
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]

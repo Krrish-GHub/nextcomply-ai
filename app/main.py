@@ -283,21 +283,23 @@ async def analyze(document_id: str,category: str='NABH',authorization: str|None=
    missing=ai_obs.get('missing_evidence',[])
    verify=ai_obs.get('needs_verification',[])
   else:
-   text=doc['content'].lower(); terms=['incident escalation','incident contact','review owner','retention schedule','policy acknowledgement']
+   sents=[s.strip() for s in re.split(r'(?<=[.!?])\s+|\n+',doc['content']) if len(s.strip())>18]
+   present=[s for s in sents if any(k in s.lower() for k in ('available','present','maintained','visible','displayed','signed','completed','includes'))][:5]
+   missing=[s for s in sents if any(k in s.lower() for k in ('missing','not available','not located','expired','could not locate','no recorded','not attached','did not contain','remains pending','no documented'))][:5]
+   verify=[s for s in sents if any(k in s.lower() for k in ('verify','guarantee','100%','safest','best ','cure','permanent','stated that'))][:4]
+   terms=['incident escalation','incident contact','review owner','retention schedule','policy acknowledgement']
    hits=[]
    for term in terms:
     score=sum(1 for chunk in pieces if term in chunk.lower())
     if score: hits.append((term,score))
-   phrase=', '.join(t for t,n in hits) if hits else 'none of the checked phrases'
-   title='Text observation · '+category
-   desc=(f'Illustrative lexical match: {phrase} found in the uploaded text. This does not validate meaning, completeness, or a requirement.' if hits else f'The checked phrase list ({", ".join(terms)}) did not match this extracted text. Absence is not evidence of a regulatory gap.')
-   sev='Low'
-   action='A qualified reviewer should compare the complete controlled document to current authoritative requirements, record evidence and rationale, then assign any follow-up.'
-   method='simple phrase presence; not embeddings, RAG, AI, or legal analysis'
+   title=f'Document review summary · {category}'
+   desc=(f'Identified {len(present)} evidence item(s), {len(missing)} potential gap(s) flagged for review, and {len(verify)} item(s) needing verification.' if (present or missing or verify) else 'Local text scan completed; human compliance review is required.')
+   sev='High' if missing else 'Low'
+   action='A qualified reviewer should compare the flagged items and complete controlled document against current official requirements.'
+   method='local structured observation (API rate-limited or unconfigured); human verification required'
    src=f'Uploaded document {doc["filename"]} · extracted text only'
-   present=[f'Matched term: {t} ({n} chunks)' for t,n in hits]
-   missing=[]
-   verify=[]
+   if not present and hits:
+    present=[f'Matched term: {t} ({n} chunks)' for t,n in hits]
   c.execute('INSERT INTO findings(id,document_id,category,title,description,source,severity,action,status,demo,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(fid,document_id,category,title,desc,src,sev,action,'Pending review',1,now()))
   log(c,user['name'],'completed document review','document',document_id,f'finding {fid}; {len(pieces)} chunks; {method}')
  return {'finding_id':fid,'filename':doc['filename'],'category':category,'title':title,'description':desc,'severity':sev,'action':action,'present_evidence':present,'missing_evidence':missing,'needs_verification':verify,'chunks_examined':len(pieces),'method':method,'status':'Pending review'}
