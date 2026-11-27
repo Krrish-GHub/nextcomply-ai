@@ -245,3 +245,45 @@ async def analyze_document_with_api(doc_text: str, category: str) -> dict[str, s
         ).strip(),
         "model": f"{cfg['provider']}:{cfg['model']}",
     }
+
+
+async def ocr_images_with_api(images_b64: list[tuple[str, str]]) -> str | None:
+    cfg = api_config()
+    if not cfg or not images_b64:
+        return None
+
+    prompt = (
+        "Extract all readable text accurately from these document or label images. "
+        "Preserve headings, bullet points, and table rows as clean plain text. "
+        "Return only the extracted text."
+    )
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        if cfg["provider"] == "gemini":
+            url = f"{cfg['base_url']}/models/{cfg['model']}:generateContent"
+            parts: list[dict[str, Any]] = [{"text": prompt}]
+            for mime, b64 in images_b64:
+                parts.append({"inlineData": {"mimeType": mime, "data": b64}})
+            payload = {
+                "contents": [{"role": "user", "parts": parts}],
+                "generationConfig": {"temperature": 0.1},
+            }
+            resp = await client.post(url, params={"key": cfg["api_key"]}, json=payload)
+            resp.raise_for_status()
+            return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+        url = f"{cfg['base_url']}/chat/completions"
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for mime, b64 in images_b64:
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        payload = {
+            "model": cfg["model"],
+            "temperature": 0.1,
+            "messages": [{"role": "user", "content": content}],
+        }
+        resp = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {cfg['api_key']}"},
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()

@@ -15,7 +15,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from app.llm_client import analyze_document_with_api, ask_with_api, review_ad_with_api
+from app.llm_client import analyze_document_with_api, ask_with_api, ocr_images_with_api, review_ad_with_api
 from app.source_checks import SOURCE_DIRECTORY, check_all_sources
 from io import BytesIO
 
@@ -206,15 +206,25 @@ def policies(q: str='',authorization: str|None=Header(default=None)):
  user_role(authorization);term=q.lower()
  return {'items':[p for p in POLICIES if term in json.dumps(p).lower()], 'notice':'Illustrative local sample SOPs; not hospital-approved policies.'}
 
-def extract(filename: str, data: bytes):
+async def extract(filename: str, data: bytes) -> tuple[str, bool]:
+ import base64
  ext=Path(filename).suffix.lower()
- if ext=='.txt': return data.decode('utf-8-sig',errors='replace')
+ if ext=='.txt': return data.decode('utf-8-sig',errors='replace'), False
  if ext=='.pdf':
-  with fitz.open(stream=data,filetype='pdf') as doc: return '\n'.join(p.get_text() for p in doc)
+  with fitz.open(stream=data,filetype='pdf') as doc:
+   text='\n'.join(p.get_text() for p in doc)
+   if text.strip(): return text, False
+   imgs=[('image/png',base64.b64encode(p.get_pixmap(dpi=150).tobytes('png')).decode('ascii')) for p in doc[:5]]
+  ocr_text=await ocr_images_with_api(imgs)
+  return (ocr_text or ''), True
  if ext=='.docx':
   import io
-  doc=Document(io.BytesIO(data));return '\n'.join(p.text for p in doc.paragraphs)
- raise HTTPException(415,'Supported upload formats: PDF, DOCX, TXT. Image/video analysis is not implemented.')
+  doc=Document(io.BytesIO(data));return '\n'.join(p.text for p in doc.paragraphs), False
+ if ext in {'.png','.jpg','.jpeg','.webp'}:
+  mime='image/jpeg' if ext in {'.jpg','.jpeg'} else f'image/{ext[1:]}'
+  ocr_text=await ocr_images_with_api([(mime,base64.b64encode(data).decode('ascii'))])
+  return (ocr_text or ''), True
+ raise HTTPException(415,'Supported upload formats: PDF, DOCX, TXT, PNG, JPG, WEBP.')
 def chunks(text: str, size=900, overlap=120):
  clean=re.sub(r'\s+',' ',text).strip(); out=[]; i=0
  while i<len(clean):
@@ -232,13 +242,19 @@ async def upload_document(file: UploadFile=File(...),category: str=Form('NABH'),
  if not file.filename or Path(file.filename).name!=file.filename: raise HTTPException(400,'Use a plain filename without a path.')
  raw=await file.read(MAX_UPLOAD+1)
  if len(raw)>MAX_UPLOAD: raise HTTPException(413,f'File exceeds configured {MAX_UPLOAD//(1024*1024)} MB limit.')
- text=extract(file.filename,raw)
- if not text.strip(): raise HTTPException(422,'No readable text was extracted. Scanned-image OCR is not connected.')
+ try:
+  text,used_ocr=await extract(file.filename,raw)
+ except HTTPException:
+  raise
+ except Exception:
+  text,used_ocr='',False
+ if not text.strip(): raise HTTPException(422,'No readable text was extracted. Check that an API key is set for scanned PDFs/images.')
  ident='DOC-'+uuid.uuid4().hex[:8].upper(); digest=hashlib.sha256(raw).hexdigest(); safe=ident+Path(file.filename).suffix.lower();UPLOAD_DIR.mkdir(parents=True,exist_ok=True);(UPLOAD_DIR/safe).write_bytes(raw)
+ status_label='Extracted (OCR)' if used_ocr else 'Extracted'
  with conn() as c:
-  c.execute('INSERT INTO documents(id,filename,sha256,bytes,mime,uploaded_at,status,extracted_chars,content,demo) VALUES(?,?,?,?,?,?,?,?,?,1)',(ident,file.filename,digest,len(raw),file.content_type or 'application/octet-stream',now(),'Extracted',len(text),text))
-  log(c,user['name'],'uploaded and extracted document','document',ident,f'{len(text)} characters; hash {digest[:12]}…')
- return {'id':ident,'filename':file.filename,'sha256':digest,'bytes':len(raw),'characters':len(text),'chunks':len(chunks(text)),'status':'Extracted','message':'Text extraction only. No regulatory retrieval, AI model, legal assessment, OCR, or compliance determination ran.'}
+  c.execute('INSERT INTO documents(id,filename,sha256,bytes,mime,uploaded_at,status,extracted_chars,content,demo) VALUES(?,?,?,?,?,?,?,?,?,1)',(ident,file.filename,digest,len(raw),file.content_type or 'application/octet-stream',now(),status_label,len(text),text))
+  log(c,user['name'],'uploaded and extracted document','document',ident,f'{len(text)} characters; ocr={used_ocr}; hash {digest[:12]}…')
+ return {'id':ident,'filename':file.filename,'sha256':digest,'bytes':len(raw),'characters':len(text),'chunks':len(chunks(text)),'status':status_label,'ocr':used_ocr,'message':'Text extracted via Gemini OCR.' if used_ocr else 'Text extracted locally.'}
 @app.get('/api/documents')
 def documents(authorization: str|None=Header(default=None)):
  user_role(authorization)
