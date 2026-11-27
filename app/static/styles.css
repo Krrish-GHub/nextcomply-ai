@@ -1151,6 +1151,23 @@ main {
   color: #14532d;
 }
 
+.cue-edit ul,
+.cue-diff-bad ul,
+.submitted-preview ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.cue-edit ul {
+  color: #14532d;
+}
+
+.cue-diff-bad ul {
+  color: #5c1d16;
+}
+
 .evidence-panel {
   padding: 16px;
   background: var(--cream);

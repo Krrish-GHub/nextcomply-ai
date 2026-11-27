@@ -279,6 +279,9 @@ async def analyze(document_id: str,category: str='NABH',authorization: str|None=
    action=ai_obs['action']
    method=f"external AI advisory review ({ai_obs['model']}); human verification required"
    src=f'Uploaded document {doc["filename"]} · AI advisory review'
+   present=ai_obs.get('present_evidence',[])
+   missing=ai_obs.get('missing_evidence',[])
+   verify=ai_obs.get('needs_verification',[])
   else:
    text=doc['content'].lower(); terms=['incident escalation','incident contact','review owner','retention schedule','policy acknowledgement']
    hits=[]
@@ -292,9 +295,12 @@ async def analyze(document_id: str,category: str='NABH',authorization: str|None=
    action='A qualified reviewer should compare the complete controlled document to current authoritative requirements, record evidence and rationale, then assign any follow-up.'
    method='simple phrase presence; not embeddings, RAG, AI, or legal analysis'
    src=f'Uploaded document {doc["filename"]} · extracted text only'
+   present=[f'Matched term: {t} ({n} chunks)' for t,n in hits]
+   missing=[]
+   verify=[]
   c.execute('INSERT INTO findings(id,document_id,category,title,description,source,severity,action,status,demo,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(fid,document_id,category,title,desc,src,sev,action,'Pending review',1,now()))
   log(c,user['name'],'completed document review','document',document_id,f'finding {fid}; {len(pieces)} chunks; {method}')
- return {'finding_id':fid,'chunks_examined':len(pieces),'method':method,'status':'Pending review'}
+ return {'finding_id':fid,'filename':doc['filename'],'category':category,'title':title,'description':desc,'severity':sev,'action':action,'present_evidence':present,'missing_evidence':missing,'needs_verification':verify,'chunks_examined':len(pieces),'method':method,'status':'Pending review'}
 def _local_ad_scan(text: str) -> dict[str, Any]:
  patterns=[
   (r'\b(?:no\.?\s*1|number\s+one|best|top[- ]rated|leading)\b','Ranking or superiority language','Comparative or top-ranking wording may need clear, current evidence and context before publication.','Remove the ranking unless it is supported by reliable, current evidence and an appropriate comparison.'),

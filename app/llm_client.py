@@ -185,21 +185,24 @@ DOC_SYSTEM_PROMPT = (
     "('flagged for review', 'potential gap identified', 'suggested for human review'). "
     "Return valid JSON only with keys: "
     '"title" (short observation title), '
-    '"description" (1-2 sentence advisory observation grounded in the text), '
-    '"severity" (one of "High", "Medium", "Low"), and '
-    '"action" (1 sentence suggested next step for a human reviewer).'
+    '"description" (1-2 sentence advisory summary grounded in the text), '
+    '"severity" (one of "High", "Medium", "Low"), '
+    '"action" (1 sentence suggested next step for a human reviewer), '
+    '"present_evidence" (array of 2-5 short strings listing evidence present in the text), '
+    '"missing_evidence" (array of 2-5 short strings listing missing records or potential gaps flagged for review), and '
+    '"needs_verification" (array of 1-4 short strings listing claims or statements requiring human verification).'
 )
 
 
-async def analyze_document_with_api(doc_text: str, category: str) -> dict[str, str] | None:
+async def analyze_document_with_api(doc_text: str, category: str) -> dict[str, Any] | None:
     cfg = api_config()
     if not cfg:
         return None
 
-    excerpt = doc_text.strip()[:6000]
+    excerpt = doc_text.strip()[:8000]
     user_msg = f"Topic category: {category}\n\nDocument text excerpt:\n{excerpt}"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=35.0) as client:
         if cfg["provider"] == "gemini":
             url = f"{cfg['base_url']}/models/{cfg['model']}:generateContent"
             payload = {
@@ -233,6 +236,7 @@ async def analyze_document_with_api(doc_text: str, category: str) -> dict[str, s
     sev = str(parsed.get("severity", "Medium")).strip()
     if sev not in {"Critical", "High", "Medium", "Low"}:
         sev = "Medium"
+    as_list = lambda k: [str(x).strip() for x in (parsed.get(k) or []) if str(x).strip()]
     return {
         "title": str(parsed.get("title", f"AI observation · {category}")).strip(),
         "description": str(parsed.get("description", "")).strip(),
@@ -243,6 +247,9 @@ async def analyze_document_with_api(doc_text: str, category: str) -> dict[str, s
                 "Have a qualified reviewer compare this document with current official requirements.",
             )
         ).strip(),
+        "present_evidence": as_list("present_evidence"),
+        "missing_evidence": as_list("missing_evidence"),
+        "needs_verification": as_list("needs_verification"),
         "model": f"{cfg['provider']}:{cfg['model']}",
     }
 
