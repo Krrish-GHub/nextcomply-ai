@@ -81,6 +81,20 @@ def init_db():
    c.executemany('INSERT INTO employees VALUES(?,?,?,?,?,?)',[(i,n,r,a,tr,now()) for i,n,r,a,tr in SEED_EMPLOYEES])
   if c.execute('SELECT COUNT(*) n FROM audits').fetchone()['n']==0:
    c.execute('INSERT INTO audits VALUES(?,?,?,?,?)',('AUD-001','Quarterly patient-safety process review','Quality lead','In progress',now()))
+  if c.execute('SELECT COUNT(*) n FROM documents').fetchone()['n']==0:
+   sample_doc=(
+    'Hospital Compliance Evidence & Gap Assessment\n'
+    'Organization: Sunrise Multispecialty Hospital (fictional)\n'
+    'Selected framework/topic: NABH\n'
+    '1. Patient Rights and Information: Patient-rights notice is displayed at main reception and a signed consent form is available. However, notice is missing in patient-care areas and two sampled files did not contain procedure explanation docs.\n'
+    '2. Infection Prevention and Control: Hand-hygiene posters are present and Sept-Oct minutes are available. November environmental-cleaning checklist is missing for one ward.\n'
+    '3. Medication Management: High-alert medicines list is maintained; medication fridge temperature log is missing 3 dates.\n'
+    '4. Clinical Documentation: Discharge summaries include diagnosis and follow-up; one summary is missing clinician name and signature.\n'
+    '5. Staff Qualifications: Credential files are available; one file contains an expired training certificate.\n'
+    '6. Facility Safety: Emergency exit signage is visible; fire-drill record for current quarter is unavailable.\n'
+    '7. Promotional Claims: Advertisement A guarantees best treatment and 100% successful outcomes; Advertisement C claims safest in the region without comparative evidence.'
+   )
+   c.execute('INSERT INTO documents(id,filename,sha256,bytes,mime,uploaded_at,status,extracted_chars,content,demo) VALUES(?,?,?,?,?,?,?,?,?,1)',('DOC-SAMPLE1','sunrise-hospital-nabh-sample.txt',hashlib.sha256(sample_doc.encode()).hexdigest(),len(sample_doc.encode()),'text/plain',now(),'Extracted',len(sample_doc),sample_doc))
 
 def log(c, actor, action, kind, ident, details=''):
  c.execute('INSERT INTO audit_log(actor,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)',(actor,action,kind,ident,details,now()))
