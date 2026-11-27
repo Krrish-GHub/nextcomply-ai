@@ -37,13 +37,29 @@ SYSTEM_PROMPT = (
 )
 
 
-def api_config() -> dict[str, str]:
+def _gemini_keys() -> list[str]:
+    raw: list[str] = []
+    multi = os.getenv("GEMINI_API_KEYS", "")
+    if multi.strip():
+        raw.extend(k.strip() for k in multi.split(",") if k.strip())
+    for var in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY_4"):
+        val = os.getenv(var, "").strip()
+        if val:
+            raw.append(val)
+    dedup: list[str] = []
+    for k in raw:
+        if k not in dedup:
+            dedup.append(k)
+    return dedup
+
+
+def api_config() -> dict[str, Any]:
     _load_dotenv()
-    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    gemini_keys = _gemini_keys()
     openai_key = (os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY") or "").strip()
     provider = os.getenv("LLM_PROVIDER", "").strip().lower()
 
-    if provider == "openai" or (openai_key and not gemini_key):
+    if provider == "openai" or (openai_key and not gemini_keys):
         if openai_key:
             return {
                 "provider": "openai",
@@ -51,10 +67,11 @@ def api_config() -> dict[str, str]:
                 "base_url": os.getenv("LLM_API_BASE", "https://api.openai.com/v1").rstrip("/"),
                 "model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
             }
-    if gemini_key:
+    if gemini_keys:
         return {
             "provider": "gemini",
-            "api_key": gemini_key,
+            "api_key": gemini_keys[0],
+            "api_keys": gemini_keys,
             "base_url": os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta").rstrip("/"),
             "model": os.getenv("LLM_MODEL", "gemini-2.5-flash"),
         }
@@ -62,30 +79,33 @@ def api_config() -> dict[str, str]:
 
 
 async def _gemini_post(
-    client: httpx.AsyncClient, cfg: dict[str, str], payload: dict[str, Any]
+    client: httpx.AsyncClient, cfg: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
-    candidates = [
+    models = [
         cfg["model"],
         "gemini-2.5-flash-lite",
         "gemini-3.1-flash-lite-preview",
         "gemini-flash-latest",
         "gemini-flash-lite-latest",
     ]
-    seen: list[str] = []
+    seen_models: list[str] = []
+    for m in models:
+        if m and m not in seen_models:
+            seen_models.append(m)
+    keys: list[str] = cfg.get("api_keys") or [cfg["api_key"]]
     last_exc: Exception | None = None
-    for m in candidates:
-        if not m or m in seen:
-            continue
-        seen.append(m)
+    for m in seen_models:
         url = f"{cfg['base_url']}/models/{m}:generateContent"
-        resp = await client.post(url, params={"key": cfg["api_key"]}, json=payload)
-        if resp.status_code in {404, 429, 503}:
-            last_exc = httpx.HTTPStatusError(
-                f"{resp.status_code} for {m}", request=resp.request, response=resp
-            )
-            continue
-        resp.raise_for_status()
-        return resp.json()
+        for key in keys:
+            resp = await client.post(url, params={"key": key}, json=payload)
+            if resp.status_code in {401, 403, 404, 429, 503}:
+                last_exc = httpx.HTTPStatusError(
+                    f"{resp.status_code} for {m}", request=resp.request, response=resp
+                )
+                continue
+            resp.raise_for_status()
+            cfg["used_model"] = m
+            return resp.json()
     assert last_exc is not None
     raise last_exc
 
@@ -277,7 +297,7 @@ async def analyze_document_with_api(doc_text: str, category: str) -> dict[str, A
         "present_evidence": as_list("present_evidence"),
         "missing_evidence": as_list("missing_evidence"),
         "needs_verification": as_list("needs_verification"),
-        "model": f"{cfg['provider']}:{cfg['model']}",
+        "model": f"{cfg['provider']}:{cfg.get('used_model', cfg['model'])}",
     }
 
 
